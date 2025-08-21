@@ -13,17 +13,25 @@ GOOGLE_CREDS_JSON = "credenciales.json"
 # ID del administrador del bot (cámbialo por el tuyo real)
 ADMIN_ID = "1006094141"  
 
-# Diccionario en memoria para operadores (se va llenando al usarse)
-OPERADORES = { 
-"Leo": "1006094141",  # reemplaza con el ID real de Telegram
- "Karla": "987654321"
-}
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_JSON, scope)
 client = gspread.authorize(creds)
 sheet = client.open(GOOGLE_SHEET_NAME).worksheet(GOOGLE_TAB_NAME)
+
+# --- FUNCIONES PARA OPERADORES ---
+OPERADORES_SHEET_NAME = "Operadores"  # Nombre de la pestaña para operadores
+operadores_sheet = client.open(GOOGLE_SHEET_NAME).worksheet(OPERADORES_SHEET_NAME)
+
+def cargar_operadores():
+    """Lee la pestaña 'operadores' y devuelve un dict {Nombre: ID}"""
+    try:
+        registros = operadores_sheet.get_all_records()
+        return {str(f["NomOperador"]).strip(): str(f["ID"]).strip() for f in registros if f.get("NomOperador") and f.get("ID")}
+    except Exception as e:
+        print(f"Error cargando operadores: {e}")
+        return {}
 
 # --- FUNCIONES AUXILIARES ---
 def obtener_columna(nombre_columna):
@@ -39,6 +47,25 @@ def obtener_fila_por_numero(numero_sim):
             return idx, fila
     return None, None
 
+def agregar_operador_google(nombre, telegram_id):
+    """Agregar un operador a la hoja de Google"""
+    registros = operadores_sheet.get_all_records()
+    # Verificar si ya existe
+    for fila in registros:
+        if str(fila.get("ID")) == str(telegram_id):
+            return False, f"⚠️ El operador {nombre} ya está registrado con ID {telegram_id}."
+    nueva_fila = [nombre, telegram_id]
+    operadores_sheet.append_row(nueva_fila)
+    return True, f"✅ Operador agregado: {nombre} (ID: {telegram_id})"
+
+def obtener_operador_por_id(user_id):
+    """Busca en la hoja 'operadores' qué operador tiene este ID"""
+    operadores = cargar_operadores()
+    for nombre, op_id in operadores.items():
+        if str(op_id) == str(user_id):
+            return nombre
+    return None
+
 # --- FUNCIONES PRINCIPALES ---
 def buscar_sim(app, user_id):
     registros = sheet.get_all_records()
@@ -47,15 +74,9 @@ def buscar_sim(app, user_id):
     col_historial = obtener_columna("Historial") + 1
     col_numero = obtener_columna("Número") + 1
     col_iccid = obtener_columna("ICCID") + 1
-    col_operador = obtener_columna("Operador") + 1  # Nueva columna en tu hoja
+    col_operador = obtener_columna("Operador") + 1
 
-    # Buscar qué operador corresponde a este user_id
-    operador_asignado = None
-    for nombre, op_id in OPERADORES.items():
-        if str(op_id) == str(user_id):
-            operador_asignado = nombre
-            break
-
+    operador_asignado = obtener_operador_por_id(user_id)
     if not operador_asignado:
         return "🚫 No estás registrado como operador. Pide al admin que te agregue."
 
@@ -83,6 +104,7 @@ def buscar_sim(app, user_id):
             )
 
     return f"❌ No hay SIMs disponibles para {app} asignadas a tu operador ({operador_asignado})"
+
 def agregar_sim(numero, iccid, compania):
     nueva_fila = [numero, iccid, compania, "Activo", "", "", ""]  # Ajusta columnas según tu hoja
     sheet.append_row(nueva_fila)
@@ -162,11 +184,11 @@ def cmd_agregar_operador(update, context):
     # Guardar en Google Sheets
     registros = sheet.get_all_records()
     col_operador = obtener_columna("Operador") + 1
-    col_id = obtener_columna("OperadorID") + 1
+    col_id = obtener_columna("ID") + 1
 
     # Verificar si ya existe
     for fila in registros:
-        if str(fila.get("OperadorID")) == str(telegram_id):
+        if str(fila.get("ID")) == str(telegram_id):
             update.message.reply_text(f"⚠️ El operador {nombre} ya está registrado con ID {telegram_id}.")
             return
 
@@ -261,7 +283,28 @@ async def usadas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resultado = obtener_apps_usadas(numero)
     await update.message.reply_text(resultado)
 
+async def cmd_agregar_operador(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
 
+    # Verificar si es admin
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("🚫 No tienes permisos para agregar operadores.")
+        return
+
+    try:
+        nombre = context.args[0]
+        telegram_id = context.args[1]
+    except IndexError:
+        await update.message.reply_text("Uso correcto: /agregar_operador NOMBRE TELEGRAM_ID")
+        return
+
+    ok, mensaje = agregar_operador_google(nombre, telegram_id)
+    if ok:
+        # Actualizamos diccionario en memoria
+        global OPERADORES
+        OPERADORES = cargar_operadores()
+
+    await update.message.reply_text(mensaje)
 
 # --- INICIO DEL BOT ---
 if __name__ == "__main__":
@@ -278,7 +321,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("historial", historial))
     app.add_handler(CommandHandler("usadas", usadas))
     app.add_handler(CommandHandler("agregar_operador", cmd_agregar_operador))
-    app.add_handler(CommandHandler("buscar", buscar))
 
     print("✅ Bot ejecutándose...")
     app.run_polling()
