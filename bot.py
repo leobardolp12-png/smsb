@@ -10,6 +10,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import json
 import os
 from oauth2client.service_account import ServiceAccountCredentials
+from telegram import Update
+from telegram.ext import ContextTypes
 
 scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
 json_creds = os.environ.get("GOOGLE_CREDS_JSON")
